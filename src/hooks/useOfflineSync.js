@@ -200,11 +200,16 @@ const useOfflineSync = () => {
     }
     const conflictController = conflictControllerRef.current;
 
-    const executeSync = async () => {
+    const executeSync = async (resetRetries = false) => {
       const { token: currentToken, user: currentUser, isAuthenticated: currentIsAuthenticated, loading: currentLoading } = authRef.current;
-      const queue = await getQueueIndexedDB();
+      let queue = await getQueueIndexedDB();
       if (queue.length === 0) {
         return;
+      }
+
+      if (resetRetries) {
+        queue = queue.map((item) => ({ ...item, retryCount: 0 }));
+        await setQueue(queue);
       }
 
       // Wait for AuthContext to finish initial session validation before
@@ -395,7 +400,7 @@ const useOfflineSync = () => {
       }
     };
 
-    const executeSyncWithLocalLock = async () => {
+    const executeSyncWithLocalLock = async (resetRetries = false) => {
       const LOCK_KEY = "eventra_offline_sync_local_lock";
       const LOCK_TIMEOUT_MS = 30_000;
 
@@ -419,7 +424,7 @@ const useOfflineSync = () => {
         localStorage.setItem(LOCK_KEY, lockData);
       } catch {
         // If localStorage fails (private mode etc.), run sync directly to avoid blocking
-        await executeSync();
+        await executeSync(resetRetries);
         return;
       }
 
@@ -432,7 +437,7 @@ const useOfflineSync = () => {
       heartbeatIntervalRef.current = heartbeatInterval;
 
       try {
-        await executeSync();
+        await executeSync(resetRetries);
       } finally {
         clearInterval(heartbeatInterval);
         try {
@@ -447,7 +452,7 @@ const useOfflineSync = () => {
       }
     };
 
-    const handleOnline = async () => {
+    const handleOnline = async (resetRetries = false) => {
       // 🔥 FIX: Check both sync state and pending lock state to prevent multiple queuing
       if (isSyncing.current || isLockPending.current) {
         return;
@@ -463,14 +468,14 @@ const useOfflineSync = () => {
                 logger.log("[useOfflineSync] Sync lock is held by another tab via Web Locks. Skipping.");
                 return;
               }
-              await executeSync();
+              await executeSync(resetRetries);
             });
           } catch (err) {
             logger.warn("[useOfflineSync] Web Locks request failed, falling back to LocalStorage lock:", err);
-            await executeSyncWithLocalLock();
+            await executeSyncWithLocalLock(resetRetries);
           }
         } else {
-          await executeSyncWithLocalLock();
+          await executeSyncWithLocalLock(resetRetries);
         }
       } finally {
         isLockPending.current = false;
@@ -478,16 +483,18 @@ const useOfflineSync = () => {
     };
 
     // 🔥 FIX: Safely define the missing functions introduced by the master branch to prevent ReferenceErrors
-    const handleSyncRequested = () => void handleOnline();
+    const handleSyncRequested = () => void handleOnline(true);
+    const handleQueueUpdated = () => void handleOnline(false);
     const handleServiceWorkerMessage = (event) => {
       if (event?.data?.type === 'SYNC_REQUESTED') {
-        void handleOnline();
+        void handleOnline(true);
       }
     };
+    const handleOnlineEvent = () => void handleOnline(true);
 
-    window.addEventListener("online", handleOnline);
+    window.addEventListener("online", handleOnlineEvent);
     window.addEventListener("eventra-background-sync", handleSyncRequested);
-    window.addEventListener("eventra-offline-queue-updated", handleSyncRequested);
+    window.addEventListener("eventra-offline-queue-updated", handleQueueUpdated);
     window.addEventListener("eventra-session-restored", handleSyncRequested);
     navigator.serviceWorker?.addEventListener?.("message", handleServiceWorkerMessage);
 
@@ -497,19 +504,19 @@ const useOfflineSync = () => {
     if (navigator.onLine) {
       if (typeof window.requestIdleCallback === "function") {
         idleId = window.requestIdleCallback(() => {
-          void handleOnline();
+          void handleOnline(true);
         });
       } else {
         timeoutId = setTimeout(() => {
-          void handleOnline();
+          void handleOnline(true);
         }, 200);
       }
     }
 
     return () => {
-      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("online", handleOnlineEvent);
       window.removeEventListener("eventra-background-sync", handleSyncRequested);
-      window.removeEventListener("eventra-offline-queue-updated", handleSyncRequested);
+      window.removeEventListener("eventra-offline-queue-updated", handleQueueUpdated);
       window.removeEventListener("eventra-session-restored", handleSyncRequested);
       navigator.serviceWorker?.removeEventListener?.("message", handleServiceWorkerMessage);
       

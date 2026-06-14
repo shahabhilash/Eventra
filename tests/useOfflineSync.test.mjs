@@ -259,6 +259,36 @@ const runAll = async () => {
   resetReact(); // Cleans up previous effects
   console.log("  pass  Interval cleanup is correct!");
 
+  // Test 5: Reset retry count on online and sync triggers
+  console.log("Running Test 5: Reset retry count on online and sync triggers");
+  resetReact();
+  currentAuth = {
+    token: "mock-token",
+    user: { id: "u1" },
+    isAuthenticated: () => true,
+    loading: false,
+  };
+  currentQueue = [
+    { id: "zombie-item", userId: "u1", retryCount: 3, payload: { val: 1 } },
+  ];
+  let fetchSucceeded = false;
+  globalThis.mockFetchWithTimeout = async () => {
+    fetchSucceeded = true;
+    return {
+      response: { ok: true, status: 200 },
+      data: {},
+    };
+  };
+  renderHook();
+
+  // Trigger online sync (which calls handleOnlineEvent -> handleOnline(true))
+  window.dispatchEvent(new window.Event("online"));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.ok(fetchSucceeded, "Should attempt sync for zombie item after retryCount is reset");
+  assert.equal(currentQueue.length, 0, "Queue should be cleared after successful sync of reset item");
+  console.log("  pass  Reset retry count behavior verified!");
+
   console.log("All useOfflineSync tests passed successfully!");
 };
 
